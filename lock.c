@@ -67,10 +67,11 @@ void lock_print_shifts(Lock lock)
 
 void lock_print(Lock lock)
 {
-	printf("      v\n");
+	printf("            v\n");
 	for (size_t i = 0; i < lock.disks; i++) {
+		printf("%ld:    ", i);
 		for (size_t s = 0; s < HOLES - (lock.disk_ptr[i] + 1); s++)
-			printf(" ");
+			printf(".");
 		printf("oooxooo\n");
 	}
 }
@@ -265,33 +266,78 @@ skip:
 	return max;
 }
 
+struct researcher {
+	Lock *l;
+	Shift s;
+	uint16_t eval;
+};
+
+void *prepare_research(void *arg)
+{
+	struct researcher *r = (struct researcher *) arg;
+	Lock c = lock_cp(*(r->l));
+
+	if (!shift(r->s, &c)) {
+		lock_free(c);
+		return NULL;
+	}
+	r->eval = research(c, 1, r->s);
+
+	lock_free(c);
+	return NULL;
+}
+
 Shift solve(Lock lock, Shift last)
 {
 	uint16_t max = 0;
 	Shift best = { .disk = 0, .inverted = false };
+	pthread_t *ts = (pthread_t *) calloc(lock.disks * 2, sizeof(pthread_t));
+	if (!ts) {
+		printf("Error allocating memory\n");
+		return best;
+	}
+	struct researcher *targs = (struct researcher *) calloc(lock.disks * 2, sizeof(struct researcher));
+	if (!targs) {
+		printf("Error allocating memory\n");
+		free(ts);
+		return best;
+	}
 
 	for (size_t i = 0; i < lock.disks; i++) {
 		if (disk_is_indepedent(lock, i))
 			continue;
 		for (size_t j = 0; j < 2; j++) {
-			Lock copy = lock_cp(lock);
 			Shift s = { .disk = i, .inverted = j ? false : true };
 			if (shift_is_inverted(last, s))
-				goto next;
-			if (!shift(s, &copy))
-				goto next;
-			uint16_t val = research(copy, 1, s);
+				continue;
+			targs[2 * i + j].l = &lock;
+			targs[2 * i + j].s = s;
+			targs[2 * i + j].eval = 0;
+			pthread_create(&ts[i * 2 + j], NULL, prepare_research, (void *) &targs[2 * i + j]);
+		}
+	}
+	for (size_t i = 0; i < lock.disks; i++) {
+		if (disk_is_indepedent(lock, i))
+			continue;
+		for (size_t j = 0; j < 2; j++) {
+			uint16_t val;
+			Shift s = { .disk = i, .inverted = j ? false : true };
+			if (shift_is_inverted(last, s))
+				continue;
+			pthread_join(ts[2 * i +j], NULL);
+			val = targs[2 * i + j].eval;
 			if (val > max || (val == max && rand() % 2 == 0)) {
 				best.disk = i;
 				best.inverted = j ? false : true;
 				max = val;
 			}
-next:
-			lock_free(copy);
 		}
 	}
 
 	printf("\n");
+
+	free(ts);
+	free(targs);
 
 	return best;
 }
@@ -307,7 +353,7 @@ int main(int argc, char *argv[])
        	next.inverted = false;
 
 	// double the size to be able to store one correction shift per shift (and hopw this is enough)
-	solution = calloc(ITERATIONS, sizeof(Shift));
+	solution = calloc(2 * ITERATIONS, sizeof(Shift));
 	idx = 0;
 
 	printf("\n====== Welcome to the Gothic 1 Remake Lock Solver ======\n\n");
@@ -366,7 +412,7 @@ int main(int argc, char *argv[])
 		// apply best shift
 		solution[idx] = next;
 		idx++;
-		if (idx >= ITERATIONS) {
+		if (idx >= 2 * ITERATIONS) {
 			printf("out of bounds\n");
 			return 1;
 		}

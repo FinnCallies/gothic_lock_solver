@@ -1,6 +1,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <pthread.h>
 
 typedef struct lock {
 	uint8_t disks;
@@ -15,7 +16,7 @@ typedef struct shift {
 
 #define PIN 3
 #define HOLES 7
-#define MAX_DEPTH 8
+#define MAX_DEPTH 10
 #define ITERATIONS 100
 
 void correct(Lock *l);
