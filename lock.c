@@ -1,61 +1,65 @@
 #include "lock.h"
 #include <time.h>
 
+// The shifts needed to solve the lock
+Shift *solution;
+size_t idx;
+
 void lock_free(Lock lock)
 {
-	if (!lock.layer_moves)
+	if (!lock.disk_deps)
 		return;
-	for (size_t i = 0; i < lock.layers; i++) {
-		if (!lock.layer_moves[i])
+	for (size_t i = 0; i < lock.disks; i++) {
+		if (!lock.disk_deps[i])
 			continue;
-		free(lock.layer_moves[i]);
+		free(lock.disk_deps[i]);
 	}
-	free(lock.layer_moves);
-	if (lock.layer_ptr)
-		free(lock.layer_ptr);
+	free(lock.disk_deps);
+	if (lock.disk_ptr)
+		free(lock.disk_ptr);
 }
 
-void lock_set_move(uint8_t layer, int8_t moves, bool inverted, Lock *lock)
+void lock_set_dependency(uint8_t disk, int8_t shifts, bool inverted, Lock *lock)
 {
-	if (layer >= lock->layers || moves >= lock->layers)
+	if (disk >= lock->disks || shifts >= lock->disks)
 		return;
 
-	lock->layer_moves[layer][moves] = inverted ? -1 : 1;
+	lock->disk_deps[disk][shifts] = inverted ? -1 : 1;
 }
 
-Lock lock_new(uint8_t layers) 
+Lock lock_new(uint8_t disks) 
 {
 	Lock ret;
 
-	ret.layers = layers;
-	ret.layer_moves = (int8_t **) calloc(ret.layers, sizeof(int8_t *));
-	if (!ret.layer_moves) {
-		ret.layers = 0;
+	ret.disks = disks;
+	ret.disk_deps = (int8_t **) calloc(ret.disks, sizeof(int8_t *));
+	if (!ret.disk_deps) {
+		ret.disks = 0;
 		return ret;
 	}
-	ret.layer_ptr = (uint8_t *) calloc(ret.layers, sizeof(uint8_t));
-	if (!ret.layer_ptr) {
-		ret.layers = 0;
+	ret.disk_ptr = (uint8_t *) calloc(ret.disks, sizeof(uint8_t));
+	if (!ret.disk_ptr) {
+		ret.disks = 0;
 		return ret;
 	}
-	for (size_t i = 0; i < ret.layers; i++) {
-		ret.layer_moves[i] = (int8_t *) calloc(ret.layers, sizeof(int8_t));
-		if (!ret.layer_moves[i]) {
+	for (size_t i = 0; i < ret.disks; i++) {
+		ret.disk_deps[i] = (int8_t *) calloc(ret.disks, sizeof(int8_t));
+		if (!ret.disk_deps[i]) {
 			lock_free(ret);
 			return ret;
 		}
-		lock_set_move(i, i, false, &ret);
+		lock_set_dependency(i, i, false, &ret);
 	}
 
 	return ret;
 }
 
-void lock_print_moves(Lock lock)
+void lock_print_shifts(Lock lock)
 {
-	for (size_t i = 0; i < lock.layers; i++) {
-		printf("%2d:    ", i);
-		for (size_t j = 0; j < lock.layers; j++) {
-			printf("%2d ", lock.layer_moves[i][j]);
+	for (size_t i = 0; i < lock.disks; i++) {
+		printf("%2ld:    ", i);
+		for (size_t j = 0; j < lock.disks; j++) {
+			printf("%2d ", lock.disk_deps[i][j]);
 		}
 		printf("\n");
 	}
@@ -64,37 +68,41 @@ void lock_print_moves(Lock lock)
 void lock_print(Lock lock)
 {
 	printf("      v\n");
-	for (size_t i = 0; i < lock.layers; i++) {
-		for (size_t s = 0; s < HOLES - (lock.layer_ptr[i] + 1); s++)
+	for (size_t i = 0; i < lock.disks; i++) {
+		for (size_t s = 0; s < HOLES - (lock.disk_ptr[i] + 1); s++)
 			printf(" ");
 		printf("oooxooo\n");
 	}
 }
 
-void lock_set_layer(uint8_t layer, uint8_t set, Lock *lock)
+void lock_set_disk_ptr(uint8_t disk, uint8_t set, Lock *lock)
 {
-	if (layer >= lock->layers || set >= HOLES)
+	if (disk >= lock->disks || set >= HOLES)
 		return;
 
-	lock->layer_ptr[layer] = set;
+	lock->disk_ptr[disk] = set;
 }
 
 bool is_solved(Lock lock)
 {
-	for (size_t i = 0; i < lock.layers; i++)
-		if (lock.layer_ptr[i] != PIN)
+	for (size_t i = 0; i < lock.disks; i++)
+		if (lock.disk_ptr[i] != PIN)
 			return false;
 
 	return true;
 }
 
-bool lock_cmp(Lock a, Lock b)
+/**
+ * Compare two locks states a and b
+ * This will NOT compare dependencies but simply the state of the locks disks
+ */
+bool lock_state_cmp(Lock a, Lock b)
 {
-	if (a.layers != b.layers)
+	if (a.disks != b.disks)
 		return false;
 
-	for (size_t i = 0; i < a.layers; i++)
-		if (a.layer_ptr[i] != b.layer_ptr[i])
+	for (size_t i = 0; i < a.disks; i++)
+		if (a.disk_ptr[i] != b.disk_ptr[i])
 			return false;
 
 	return true;
@@ -104,99 +112,115 @@ Lock lock_cp(Lock lock)
 {
 	Lock ret;
 
-	ret = lock_new(lock.layers);
+	ret = lock_new(lock.disks);
 
-	for (size_t i = 0; i < lock.layers; i++) {
-		ret.layer_ptr[i] = lock.layer_ptr[i];
-		for (size_t j = 0; j < lock.layers; j++) {
-			ret.layer_moves[i][j] = lock.layer_moves[i][j];
+	for (size_t i = 0; i < lock.disks; i++) {
+		ret.disk_ptr[i] = lock.disk_ptr[i];
+		for (size_t j = 0; j < lock.disks; j++) {
+			ret.disk_deps[i][j] = lock.disk_deps[i][j];
 		}
 	}
 
 	return ret;
 }
 
-bool lock_apply(Lock from, Lock *to)
+/**
+ * Copy the disk states from one lock to another
+ */
+bool lock_state_cpy(Lock from, Lock *to)
 {
-	if (from.layers != to->layers)
+	if (from.disks != to->disks)
 		return false;
 
-	for (size_t i = 0; i < from.layers; i++) {
-		to->layer_ptr[i] = from.layer_ptr[i];
+	for (size_t i = 0; i < from.disks; i++) {
+		to->disk_ptr[i] = from.disk_ptr[i];
 	}
 
 	return true;
 }
 
-bool layer_is_indepedent(Lock lock, uint8_t layer)
+/**
+ * True for disks which have no dependencies
+ */
+bool disk_is_indepedent(Lock lock, uint8_t disk)
 {
-	for (size_t i = 0; i < lock.layers; i++) {
-		if (i == layer)
+	for (size_t i = 0; i < lock.disks; i++) {
+		if (i == disk)
 			continue;
-		if (lock.layer_moves[layer][i] != 0)
+		if (lock.disk_deps[disk][i] != 0)
 			return false;
 	}
 
 	return true;
 }
 
-bool move(Move move, Lock *lock)
+bool shift(Shift shift, Lock *lock)
 {
-	if (move.layer >= lock->layers)
+	if (shift.disk >= lock->disks)
 		return false;
-	int8_t mod = move.inverted ? -1 : 1;
+	int16_t mod = shift.inverted ? -1 : 1;
 	Lock c = lock_cp(*lock);
 
-	for (size_t i = 0; i < lock->layers; i++) {
-		if (lock->layer_moves[move.layer][i] == 0)
+	// For disk in lock
+	for (size_t i = 0; i < lock->disks; i++) {
+		// Continue if no dependency
+		if (lock->disk_deps[shift.disk][i] == 0)
 			continue;
 
-		int8_t m = lock->layer_moves[move.layer][i] * mod;
-		if (lock->layer_ptr[i] + m < 0 || lock->layer_ptr[i] + m >= HOLES) {
+		// apply inverted state
+		int16_t m = (int16_t) lock->disk_deps[shift.disk][i] * mod;
+
+		// apply dependency
+		if ((int16_t) lock->disk_ptr[i] +  m < 0 || (int16_t) lock->disk_ptr[i] + m >= HOLES) {
+			// Exit early if move not possible
 			lock_free(c);
 			return false;
 		}
-		c.layer_ptr[i] += m;
+		c.disk_ptr[i] += m;
 	}
 
-	lock_apply(c, lock);
+	// Apply state from working copy to lock
+	lock_state_cpy(c, lock);
 
 	lock_free(c);
 	return true;
 }
 
+/**
+ * Fix independent disks
+ */
 void correct(Lock *l)
 {
-	for (size_t j = 0; j < l->layers; j++) {
-		if (!layer_is_indepedent(*l, j))
+	for (size_t j = 0; j < l->disks; j++) {
+		if (!disk_is_indepedent(*l, j))
 			continue;
-		if (l->layer_ptr[j] == PIN)
+		if (l->disk_ptr[j] == PIN)
 			continue;
-		Move m = { .layer = j, .inverted = l->layer_ptr[j] < PIN ? false : true };
-		while (l->layer_ptr[j] != PIN)
-			move(m, l);
+		Shift s = { .disk = j, .inverted = l->disk_ptr[j] < PIN ? false : true };
+		while (l->disk_ptr[j] != PIN)
+			shift(s, l);
 	}
 }
 
-uint8_t evaluate(Lock lock, uint8_t depth)
+uint16_t evaluate_lock_state(Lock lock, uint8_t depth)
 {
-	uint8_t value = 0;
+	uint16_t value = 0;
 
 	if (is_solved(lock))
-		return UINT8_MAX - depth;
+		return UINT16_MAX - depth;
 
-	for (size_t i = 0; i < lock.layers; i++) {
-		if (layer_is_indepedent(lock, i))
+	for (size_t i = 0; i < lock.disks; i++) {
+		if (disk_is_indepedent(lock, i))
 			continue;
-		if (lock.layer_ptr[i] == PIN) {
-			value += (UINT8_MAX / lock.layers);
-			for (size_t j = 0; j < lock.layers; j++)
-				if (i != j)
-					value += lock.layer_moves[i][j];
-		} else if (lock.layer_ptr[i] < PIN) {
-			value += lock.layer_ptr[i];
+		if (lock.disk_ptr[i] == PIN) {
+			value += 1000;
+			for (size_t j = 0; j < lock.disks; j++)
+				if (i != j && lock.disk_deps[i][j] != 0)
+					value += 100;
+		} else if (lock.disk_ptr[i] < PIN) {
+			value += lock.disk_ptr[i] * 10;
 		} else {
-			value += PIN - (lock.layer_ptr[i] - PIN);
+			value += (PIN - (lock.disk_ptr[i] - PIN)) * 10;
 		}
 	}
 
@@ -206,59 +230,31 @@ uint8_t evaluate(Lock lock, uint8_t depth)
 	return value;
 }
 
-bool is_inverted(Move a, Move b)
+bool shift_is_inverted(Shift a, Shift b)
 {
-	if (a.layer == b.layer && a.inverted != b.inverted)
+	if (a.disk == b.disk && a.inverted != b.inverted)
 		return true;
 	return false;
 }
 
-uint8_t back_research(Lock lock, uint8_t depth, Move last)
+uint16_t research(Lock lock, uint8_t depth, Shift last)
 {
-	uint8_t min = UINT8_MAX;
+	uint16_t max = 0;
 
-	if (depth == MAX_DEPTH)
-		return evaluate(lock, 0);
-	for (size_t i = 0; i < lock.layers; i++) {
+	if (depth == MAX_DEPTH || is_solved(lock))
+		return evaluate_lock_state(lock, depth);
+	for (size_t i = 0; i < lock.disks; i++) {
+		if (disk_is_indepedent(lock, i))
+			continue;
 		for (size_t j = 0; j < 2; j++) {
 			Lock copy = lock_cp(lock);
-			Move m = { .layer = i, .inverted = j ? false : true };
-			if (layer_is_indepedent(lock, i))
+			Shift s = { .disk = i, .inverted = j ? false : true };
+			if (shift_is_inverted(last, s))
 				goto skip;
-			if (is_inverted(last, m))
-				goto skip;
-			if (!move(m, &copy))
+			if (!shift(s, &copy))
 				goto skip;
 			correct(&copy);
-			uint8_t ret = back_research(copy, depth + 1, m);
-			if (ret > 0 && ret < min)
-				min = ret;
-skip:
-			lock_free(copy);
-		}
-	}
-
-	return min;
-}
-
-uint8_t research(Lock lock, uint8_t depth, Move last, Lock back_search)
-{
-	uint8_t max = 0;
-
-	if (depth == MAX_DEPTH || is_solved(lock) || lock_cmp(lock, back_search))
-		return evaluate(lock, depth);
-	for (size_t i = 0; i < lock.layers; i++) {
-		for (size_t j = 0; j < 2; j++) {
-			Lock copy = lock_cp(lock);
-			Move m = { .layer = i, .inverted = j ? false : true };
-			if (layer_is_indepedent(lock, i))
-				goto skip;
-			if (is_inverted(last, m))
-				goto skip;
-			if (!move(m, &copy))
-				goto skip;
-			correct(&copy);
-			uint8_t ret = research(copy, depth + 1, m, back_search);
+			uint16_t ret = research(copy, depth + 1, s);
 			if (ret > max)
 				max = ret;
 skip:
@@ -269,59 +265,28 @@ skip:
 	return max;
 }
 
-Move back_solve(Lock lock, Move last)
+Shift solve(Lock lock, Shift last)
 {
-	uint8_t min = UINT8_MAX;
-	Move worst = { .layer = 0, .inverted = false };
+	uint16_t max = 0;
+	Shift best = { .disk = 0, .inverted = false };
 
-	for (size_t i = 0; i < lock.layers; i++) {
+	for (size_t i = 0; i < lock.disks; i++) {
+		if (disk_is_indepedent(lock, i))
+			continue;
 		for (size_t j = 0; j < 2; j++) {
 			Lock copy = lock_cp(lock);
-			Move m = { .layer = i, .inverted = j ? false : true };
-			if (layer_is_indepedent(lock, i))
-				goto out;
-			if (is_inverted(last, m))
-				goto out;
-			if (!move(m, &copy))
-				goto out;
-			correct(&copy);
-			uint8_t val = back_research(copy, 1, m);
-			if (val > 0 && val < min) {
-				worst.layer = i;
-				worst.inverted = j ? false : true;
-				min = val;
-			}
-out:
-			lock_free(copy);
-		}
-	}
-
-	return worst;
-}
-
-Move solve(Lock lock, Move last, Lock back_search)
-{
-	uint8_t max = 0;
-	Move best = { .layer = 0, .inverted = false };
-
-	for (size_t i = 0; i < lock.layers; i++) {
-		for (size_t j = 0; j < 2; j++) {
-			Lock copy = lock_cp(lock);
-			Move m = { .layer = i, .inverted = j ? false : true };
-			if (layer_is_indepedent(lock, i))
-				goto out;
-			if (is_inverted(last, m))
-				goto out;
-			if (!move(m, &copy))
-				goto out;
-			correct(&copy);
-			uint8_t val = research(copy, 1, m, back_search);
+			Shift s = { .disk = i, .inverted = j ? false : true };
+			if (shift_is_inverted(last, s))
+				goto next;
+			if (!shift(s, &copy))
+				goto next;
+			uint16_t val = research(copy, 1, s);
 			if (val > max || (val == max && rand() % 2 == 0)) {
-				best.layer = i;
+				best.disk = i;
 				best.inverted = j ? false : true;
 				max = val;
 			}
-out:
+next:
 			lock_free(copy);
 		}
 	}
@@ -334,106 +299,96 @@ out:
 int main(int argc, char *argv[])
 {
 	srand(time(NULL));
-	Lock l = lock_new(7);
-	Move next = { .layer = UINT8_MAX, .inverted = false };
-	size_t iterations = 100;
-	Move *solution = calloc(2 * iterations, sizeof(Move));
-	size_t idx = 0;
+	int rc = 0;
+	Shift next;
+	Lock l;
+       
+	next.disk = UINT8_MAX;
+       	next.inverted = false;
 
-	// Set moves
-	lock_set_move(0, 5, true, &l);
-	lock_set_move(1, 0, false, &l);
-	lock_set_move(2, 6, false, &l);
-	lock_set_move(3, 0, false, &l);
-	lock_set_move(3, 6, true, &l);
-	lock_set_move(4, 3, true, &l);
-	lock_set_move(4, 6, false, &l);
-	lock_set_move(5, 0, false, &l);
-	lock_set_move(6, 0, false, &l);
-	lock_set_move(6, 5, false, &l);
+	// double the size to be able to store one correction shift per shift (and hopw this is enough)
+	solution = calloc(ITERATIONS, sizeof(Shift));
+	idx = 0;
 
-	// Set starting positions
-	lock_set_layer(0, 6, &l);
-	lock_set_layer(1, 4, &l);
-	lock_set_layer(2, 0, &l);
-	lock_set_layer(3, 6, &l);
-	lock_set_layer(4, 5, &l);
-	lock_set_layer(5, 4, &l);
-	lock_set_layer(6, 5, &l);
+	printf("\n====== Welcome to the Gothic 1 Remake Lock Solver ======\n\n");
 
-	lock_print_moves(l);
+	printf("How many disks does your lock have? (1-8) ");
+	scanf("%hhd", &l.disks);
+	while (l.disks > 8 || l.disks == 0) {
+		printf("Invalid disk count %hhd is not between 1 and 8\n\n", l.disks);
+		printf("How many disks does your lock have? (1-8) ");
+		scanf("%hhd", &l.disks);
+	}
+	printf("\n");
+	l = lock_new(l.disks);
+
+	for (size_t i = 0; i < l.disks; i++) {
+		printf("What is the position of disk %ld? (0-6) ", i);
+		scanf("%hhd", &l.disk_ptr[i]);
+		while (l.disk_ptr[i] >= HOLES) {
+			printf("Invalid disk position %hhn is greater than maximum disk position %d\n\n", l.disk_ptr, HOLES - 1);
+			printf("What is the position of disk %ld? (0-6) ", i);
+			scanf("%hhd", &l.disks);
+		}
+
+		for (size_t j = 0; j < l.disks; j++) {
+			char c;
+			if (i == j)
+				continue;
+			printf("Does disk %ld have a dependency on disk %ld? (y/n/i/N) ", i, j);
+			scanf(" %c", &c);
+			while (c != 'y' && c != 'n' && c != 'i' && c != 'N') {
+				printf("Invalid character %c\n\n", c);
+				printf("Does disk %ld have a dependency on disk %ld? (y/n/i/N) ", i, j);
+				scanf(" %c", &c);
+			}
+			if (c == 'N') {
+				j = l.disks;
+				continue;
+			}
+			l.disk_deps[i][j] = c == 'y' ? 1 : c == 'n' ? 0 : -1;
+		}
+		printf("\n");
+	}
+
+	lock_print_shifts(l);
 	lock_print(l);
 
-	Lock copy = lock_cp(l);
-
-	// solve copy
-//	for (size_t j = 0; j < copy.layers; j++) {
-//		copy.layer_ptr[j] = PIN;
-//	}
-//	for (size_t i = 0; i < MAX_DEPTH; i++) {
-//
-//		Move next = back_solve(copy, next);
-//		move(next, &copy);
-//
-//		for (size_t j = 0; j < copy.layers; j++) {
-//			if (!layer_is_indepedent(copy, j))
-//				continue;
-//			if (copy.layer_ptr[j] == PIN)
-//				continue;
-//			Move m = { .layer = j, .inverted = copy.layer_ptr[j] < PIN ? false : true };
-//			while (copy.layer_ptr[j] != PIN) {
-//				move(m, &copy);
-//			}
-//		}
-//	}
-//	printf("back search:\n");
-//	lock_print(copy);
-
 	// solve independent
-	for (size_t j = 0; j < l.layers; j++) {
-		if (!layer_is_indepedent(l, j))
-			continue;
-		if (l.layer_ptr[j] == PIN)
-			continue;
-		Move m = { .layer = j, .inverted = l.layer_ptr[j] < PIN ? false : true };
-		while (l.layer_ptr[j] != PIN) {
-			solution[idx] = m;
-			idx++;
-			printf("%d, %s\n", m.layer, m.inverted ? "d" : "a");
-			move(m, &l);
-		}
-	}
+	correct(&l);
 	lock_print(l);
 
 	// solve
-	for (size_t i = 0; i < iterations && !is_solved(l); i++) {
-		Move next = solve(l, next, copy);
-		printf("%d, %s\n", next.layer, next.inverted ? "d" : "a");
+	for (size_t i = 0; i < ITERATIONS && !is_solved(l); i++) {
+		next = solve(l, next);
+		printf("%d, %s\n", next.disk, next.inverted ? "d" : "a");
+
+		// apply best shift
 		solution[idx] = next;
 		idx++;
-		move(next, &l);
-
-		for (size_t j = 0; j < l.layers; j++) {
-			if (!layer_is_indepedent(l, j))
-				continue;
-			if (l.layer_ptr[j] == PIN)
-				continue;
-			Move m = { .layer = j, .inverted = l.layer_ptr[j] < PIN ? false : true };
-			while (l.layer_ptr[j] != PIN) {
-				solution[idx] = m;
-				idx++;
-				printf("%d, %s\n", m.layer, m.inverted ? "d" : "a");
-				move(m, &l);
-			}
+		if (idx >= ITERATIONS) {
+			printf("out of bounds\n");
+			return 1;
 		}
+		shift(next, &l);
+
+		correct(&l);
 
 		lock_print(l);
 	}
 
-	for (size_t i = 0; i < idx; i++)
-		printf("%d, %s\n", solution[i].layer, solution[i].inverted ? "d" : "a");
+	printf("\n");
+	if (!is_solved(l)) {
+		printf("Not solved in %d iterations\n", ITERATIONS);
+		rc = 1;
+	} else {
+		printf("Solved!\n");
+		for (size_t i = 0; i < idx; i++)
+			printf("%d, %s\n", solution[i].disk, solution[i].inverted ? "d" : "a");
+	}
 
+	free(solution);
 	lock_free(l);
 
-	return 0;
+	return rc;
 }

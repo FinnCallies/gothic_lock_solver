@@ -3,18 +3,19 @@
 #include <stdio.h>
 
 typedef struct lock {
-	uint8_t layers;
-	int8_t **layer_moves;
-	uint8_t *layer_ptr;
+	uint8_t disks;
+	int8_t **disk_deps;
+	uint8_t *disk_ptr;
 } Lock;
 
-typedef struct move {
-	uint8_t layer;
+typedef struct shift {
+	uint8_t disk;
 	bool inverted;
-} Move;
+} Shift;
 
 #define PIN 3
 #define HOLES 7
 #define MAX_DEPTH 8
+#define ITERATIONS 100
 
 void correct(Lock *l);
