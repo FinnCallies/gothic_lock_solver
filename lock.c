@@ -190,7 +190,7 @@ bool shift(Shift shift, Lock *lock)
 /**
  * Fix independent disks
  */
-void correct(Lock *l)
+void correct(Lock *l, bool track)
 {
 	for (size_t j = 0; j < l->disks; j++) {
 		if (!disk_is_indepedent(*l, j))
@@ -198,8 +198,14 @@ void correct(Lock *l)
 		if (l->disk_ptr[j] == PIN)
 			continue;
 		Shift s = { .disk = j, .inverted = l->disk_ptr[j] < PIN ? false : true };
-		while (l->disk_ptr[j] != PIN)
+		while (l->disk_ptr[j] != PIN) {
 			shift(s, l);
+			if (track) {
+				printf("%d, %s\n", s.disk, s.inverted ? "d" : "a");
+				solution[idx] = s;
+				idx++;
+			}
+		}
 	}
 }
 
@@ -254,7 +260,7 @@ uint16_t research(Lock lock, uint8_t depth, Shift last)
 				goto skip;
 			if (!shift(s, &copy))
 				goto skip;
-			correct(&copy);
+			correct(&copy, false);
 			uint16_t ret = research(copy, depth + 1, s);
 			if (ret > max)
 				max = ret;
@@ -281,6 +287,8 @@ void *prepare_research(void *arg)
 		lock_free(c);
 		return NULL;
 	}
+	correct(&c, false);
+
 	r->eval = research(c, 1, r->s);
 
 	lock_free(c);
@@ -334,8 +342,6 @@ Shift solve(Lock lock, Shift last)
 		}
 	}
 
-	printf("\n");
-
 	free(ts);
 	free(targs);
 
@@ -351,10 +357,6 @@ int main(int argc, char *argv[])
        
 	next.disk = UINT8_MAX;
        	next.inverted = false;
-
-	// double the size to be able to store one correction shift per shift (and hopw this is enough)
-	solution = calloc(2 * ITERATIONS, sizeof(Shift));
-	idx = 0;
 
 	printf("\n====== Welcome to the Gothic 1 Remake Lock Solver ======\n\n");
 
@@ -397,15 +399,22 @@ int main(int argc, char *argv[])
 		printf("\n");
 	}
 
+	// double the size to be able to store one correction shift per shift (and hopw this is enough)
+	solution = calloc(2 * ITERATIONS, sizeof(Shift));
+	idx = 0;
+
+
 	lock_print_shifts(l);
 	lock_print(l);
+	printf("\n");
 
 	// solve independent
-	correct(&l);
+	correct(&l, true);
 	lock_print(l);
 
 	// solve
 	for (size_t i = 0; i < ITERATIONS && !is_solved(l); i++) {
+		printf("\n");
 		next = solve(l, next);
 		printf("%d, %s\n", next.disk, next.inverted ? "d" : "a");
 
@@ -418,7 +427,7 @@ int main(int argc, char *argv[])
 		}
 		shift(next, &l);
 
-		correct(&l);
+		correct(&l, true);
 
 		lock_print(l);
 	}

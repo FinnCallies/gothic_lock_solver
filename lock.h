@@ -19,4 +19,4 @@ typedef struct shift {
 #define MAX_DEPTH 10
 #define ITERATIONS 100
 
-void correct(Lock *l);
+void correct(Lock *l, bool track);
